@@ -1,0 +1,700 @@
+---
+title: "Introduction to Single-cell analysis"
+author: "Robel A. Tesfaye"
+format: 
+  revealjs:
+    default-image-extension: png
+    css: custom.css
+    smaller: true
+    scrollable: true
+    embed-resources: true
+    self-contained-math: true
+editor: visual
+urlcolor: blue
+knitr:
+  opts_chunk:
+    out.width: "80%"
+    out.height: "80%"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dev = "png", dpi = 300)
+```
+
+## Main steps in single-cell analysis
+
+There is a complete [book called OSCA](https://github.com/orgs/OSCA-source/repositories) from Bioconductor on the use of bioconductor packages to perform single-cell analysis...
+
+```{r,echo=TRUE,eval=FALSE}
+# Download the Github repo following the link above and 
+# insert the path to the directory
+BiocManager::install(
+  remotes::local_package_deps(pkgdir = "~/mount/NAS_CUVIER/grpCuvier/rtesfaye/OSCA.intro-master/",
+                              dependencies = TRUE))
+bookdown::render_book(input = "~/mount/NAS_CUVIER/grpCuvier/rtesfaye/OSCA.intro-master/inst/book/",output_dir = "~/mount/NAS_CUVIER/grpCuvier/rtesfaye/OSCA_book/")
+```
+
+The major steps of single-cell rna-seq (even scATAQ-Seq) analysis can be summarized by the following commands using `Seurat` functions:
+
+-   After quality filtering: to keep live cells (not dying cells, undamaged, non empty droplets), non doublets etc...
+
+-   Find the most variable features, to limit memory usage and supposing that the most interesting biological variations are found in the most variable features...
+
+```{r,echo=TRUE,eval=FALSE}
+library(Seurat)
+snare <- FindVariableFeatures(snare, nfeatures = 3000)
+```
+
+-   Normalize the data: by default this is LogNormalize (feature expression per cell normalized to total expression times 10 000 and log transformed)
+
+-   Scale the data: to have a mean of 0 and sd of 1 across cells (standardization). The aim is to give equal weights to highly expressed genes and lowly expressed genes in downstream analyses (Differential expression, PCA ...)
+
+```{r,echo=TRUE,eval=FALSE}
+snare <- NormalizeData(snare)
+snare <- ScaleData(snare)
+```
+
+-   Linear dimensionality reduction: typically PCA in scRNA and LSI in scATAC.
+
+```{r,echo=TRUE,eval=FALSE}
+snare <- RunPCA(snare, npcs = 30)
+```
+
+-   Non-linear dimensionality reduction: UMAP and TSNE could then be used to reduce even more the dimensions. Because your PCA will generally show that after PC2/PC3 you'll still have significant variation explained. The variation explained could be reduced to the point that you can ignore after PC10. So to include all this variation, further dimensionality reduction is necessary. The non-linear reduction methods will do that by preserving the distances between your cells in the 10 or more PCs you choose to work with.
+
+```{r,echo=TRUE,eval=FALSE}
+snare <- RunUMAP(snare, dims = 1:30, reduction.name = "umap.rna")
+```
+
+-   This is clustering between cells. Finding communities of cells/quasi-cliques based on the distances (euclidean) between cells in the PCA (number of PCs to specify)...
+
+```{r,echo=TRUE,eval=FALSE}
+snare <- FindNeighbors(snare, dims = 1:30)
+snare <- FindClusters(snare, resolution = 0.5, algorithm = 3)
+```
+
+-   You can perform after this differential expression analysis between your clusters...
+
+-   Trajectory analysis and pseudo-time...
+
+## Download an example dataset from 10x and import in R
+
+```{bash,eval=FALSE,echo=TRUE}
+wget -O /home/robel/mount/NAS_CUVIER/grpCuvier/rtesfaye/M2_TP_2023/singlecell/pbmc_granulocyte_sorted_10k_filtered_feature_bc_matrix.h5 https://cf.10xgenomics.com/samples/cell-arc/1.0.0/pbmc_granulocyte_sorted_10k/pbmc_granulocyte_sorted_10k_filtered_feature_bc_matrix.h5
+wget -O /home/robel/mount/NAS_CUVIER/grpCuvier/rtesfaye/M2_TP_2023/singlecell/pbmc_granulocyte_sorted_10k_atac_fragments.tsv.gz https://cf.10xgenomics.com/samples/cell-arc/1.0.0/pbmc_granulocyte_sorted_10k/pbmc_granulocyte_sorted_10k_atac_fragments.tsv.gz
+wget -O /home/robel/mount/NAS_CUVIER/grpCuvier/rtesfaye/M2_TP_2023/singlecell/pbmc_granulocyte_sorted_10k_atac_fragments.tsv.gz.tbi https://cf.10xgenomics.com/samples/cell-arc/1.0.0/pbmc_granulocyte_sorted_10k/pbmc_granulocyte_sorted_10k_atac_fragments.tsv.gz.tbi
+```
+
+```{r,message=FALSE}
+library(Signac)
+library(Seurat)
+library(EnsDb.Hsapiens.v86)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(magrittr)
+library(tidyverse)
+# The atac fragments file contains all the fragments, so it's pretty heavy
+# in memory, that's why it's not loaded as an R object
+fragpath <- "/home/robel/mount/NAS_CUVIER/grpCuvier/rtesfaye/M2_TP_2023/singlecell/pbmc_granulocyte_sorted_10k_atac_fragments.tsv.gz"
+
+# counts <- Read10X_h5("/home/robel/mount/NAS_CUVIER/grpCuvier/rtesfaye/M2_TP_2023/singlecell/pbmc_granulocyte_sorted_10k_filtered_feature_bc_matrix.h5")
+counts = readRDS("/home/robel/mount/NAS_CUVIER/grpCuvier/rtesfaye/M2_TP_2023/singlecell/counts.RDATA")
+```
+
+Let's see the contents of `counts` produced by `Read10X_h5`
+
+```{r}
+class(counts)
+head(names(counts))
+class(counts[[1]])
+head(colnames(counts[[1]]))
+all(colnames(counts[[1]])==colnames(counts[[2]]))
+head(rownames(counts[[1]]))
+head(rownames(counts[[2]]))
+```
+
+Single-cell contains many 0 values. Representing the data in `dgcMatrix` or similar classes that can contain sparse data saves a lot of memory space. In these classes, 0 values become dots "."
+
+```{r,eval=FALSE,echo=TRUE}
+object.size(as.matrix(counts[[1]]))
+# 3490583256 bytes
+object.size(counts[[1]])
+# 285677928 bytes
+```
+
+```{r,message=FALSE,warning=FALSE}
+# get gene annotations for hg38
+# annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+# annotation %<>% `seqlevelsStyle<-`("UCSC")
+annotation = readRDS(file = "/home/robel/mount/NAS_CUVIER/grpCuvier/rtesfaye/M2_TP_2023/singlecell/annotation.RDATA")
+
+# create a Seurat object containing the RNA adata
+pbmc <- CreateSeuratObject(
+  counts = counts$`Gene Expression`,
+  assay = "RNA"
+)
+
+# create ATAC assay and add it to the object
+pbmc[["ATAC"]] <- CreateChromatinAssay(
+  counts = counts$Peaks,
+  sep = c(":", "-"),
+  fragments = fragpath,
+  annotation = annotation
+)
+rm(counts)
+```
+
+```{r}
+str(pbmc)
+```
+
+👆🏾 `pbmc@assays$RNA@data` and `pbmc@assays$RNA@counts` contain both the raw counts. Only after `NormalizeData()` that `pbmc@assays$RNA@data` will store normalized data.
+
+## Quality control: the idea behind the metrics...
+
+When you import the data `Seurat` automatically calculate the number of detected features per cell and the total counts par cell. These data are present in the `pbmc@meta.data` section or accessible just with `pbmc$`.
+
+```{r}
+colnames(pbmc@meta.data)
+```
+
+What are we looking for:
+
+-   non-empty droplets
+
+-   no (few) doublets
+
+-   non-dying or alive cells
+
+What metrics would help us discard unwanted samples (cells):
+
+-   total detected genes
+
+-   total RNA (ATAC fragments) detected
+
+-   percentage of mitochondrial genes (dying cells would have their membranes disrupted causing nuclear transcripts to leak)
+
+-   some suggest ribosomal genes as well could represent a significantly higher percentage...
+
+-   Doublets could be considered as samples that demonstrate significantly higher number of genes detected or RNA counts (ATAC fragments). The are some how outliers when you look at the distribution of `nCounts_RNA` and `nFeatures_RNA`, but they can also be detected using scrublet that creates artificial doublets and label cells as "doublets" if their profile resembles that of the artificial doublets.
+
+For the ATAC data:
+
+-   Nucleosomal signals: sizes of ATAC fragments should display a strong enrichment at the sizes of n \* nucleosomes (n = c(1,2,3 ...), around 200, 400, 600 ...). The ratio of mononucleosomal fragments to nucleosome-free fragments could be calculated using `NucleosomeSignal()`. Dying cells would have more naked or unwrapped DNA.
+
+-   TSS enrichment score: `TSSEnrichment()` calculates ATAC signal ratio between at TSS sites and at TSS flanking regions. Low TSS enrichment score could suggest low expression and so the signal is very comparable to the "background" signal...
+
+-   You can also add FriP (fragments in peaks) and fragments in blacklisted regions to see how specific your ATAC experiment is towards open chromatin regions...
+
+## Let's make the quality measurements
+
+Percentage of mitochondrial RNA molecules. You can do the same if you wish to consider ribosomal genes as quality criterion (or probably discard their effect in your clustering etc).
+
+```{r}
+DefaultAssay(pbmc) ="RNA"
+mito.genes = grep(pattern = "^MT-", 
+                  x = rownames(x = pbmc@assays$RNA@data), value = TRUE)
+# pattern = "(^RPL|^RPS|^MRP)" for ribosomal genes in humans
+percent.mito <- Matrix::colSums(pbmc@assays$RNA@counts[mito.genes, ])/
+  Matrix::colSums(pbmc@assays$RNA@counts)
+pbmc <- AddMetaData(object = pbmc, metadata = percent.mito, col.name = "percent.mt")
+```
+Let's make the 2 major metrics for the ATAC data...
+```{r,eval=FALSE,echo=TRUE}
+DefaultAssay(pbmc) ="ATAC"
+pbmc <- NucleosomeSignal(object = pbmc)
+pbmc <- TSSEnrichment(object = pbmc, fast = TRUE)
+saveRDS(pbmc,"/home/robel/mount/NAS_CUVIER/grpCuvier/rtesfaye/M2_TP_2023/singlecell/pbmc_preprocessed.RDATA")
+```
+```{r}
+pbmc = readRDS("/home/robel/mount/NAS_CUVIER/grpCuvier/rtesfaye/M2_TP_2023/singlecell/pbmc_preprocessed.RDATA")
+DensityScatter(pbmc, x = 'nCount_ATAC', y = 'TSS.enrichment', log_x = TRUE, quantiles = TRUE)
+pbmc$high.tss <- ifelse(pbmc$TSS.enrichment > 3, 'High', 'Low')
+# The nect line isn't working, no idea why
+# TSSPlot(pbmc, group.by = 'high.tss',assay = "ATAC") + NoLegend()
+pbmc$nucleosome_group <- ifelse(pbmc$nucleosome_signal > 4, 'NS > 4', 'NS < 4')
+FragmentHistogram(object = pbmc, group.by = 'nucleosome_group')
+```
+
+---
+
+## Finding doublets with scrublet
+
+This part is from this [site](https://matthieuxmoreau.github.io/EarlyPallialNeurogenesis/html-Reports/Quality_Control.html)
+
+```{r}
+library(reticulate)
+use_condaenv(condaenv = "singlecell",required = TRUE)
+# dir.create("doublets")
+# exprData = Matrix::Matrix(as.matrix(pbmc@assays$RNA@counts),sparse = TRUE)
+# Matrix::writeMM(exprData,"doublets/matrix.mtx")
+```
+
+```{python}
+import scrublet as scr
+import scipy.io
+import numpy as np
+import os
+
+#Load raw counts matrix and gene list
+input_dir = '/home/robel/mount/NAS_CUVIER/grpCuvier/rtesfaye/M2_TP_2023/singlecell/'
+counts_matrix = scipy.io.mmread(input_dir + 'doublets/matrix.mtx').T.tocsc()
+
+#Initialize Scrublet object
+scrub = scr.Scrublet(counts_matrix,
+                     expected_doublet_rate=0.1,
+                     sim_doublet_ratio=2,
+                     n_neighbors = 8)
+
+#Run the default pipeline
+doublet_scores, predicted_doublets = scrub.scrub_doublets(min_counts=1, 
+                                                          min_cells=3, 
+                                                          min_gene_variability_pctl=85, 
+                                                          n_prin_comps=25)
+```
+
+```{r}
+pbmc@meta.data$DoubletScore = py$doublet_scores
+# Plot doublet score
+ggplot(pbmc@meta.data, aes(x = DoubletScore, after_stat(ndensity))) +
+  geom_histogram(bins = 200, colour ="lightgrey")+
+  geom_vline(xintercept = 0.21, colour = "red", linetype = 2)+
+  geom_vline(xintercept = 0.2, colour = "green", linetype = 2) # Manually set threshold
+```
+
+```{r}
+# Manually set threshold at doublet score to 0.15
+pbmc@meta.data$Predicted_doublets <- ifelse(py$doublet_scores > 0.2, "Doublet","Singlet" )
+table(pbmc@meta.data$Predicted_doublets)
+```
+
+```{r}
+library(cowplot)
+
+# Seurat's dedicated function is failing Idk when rendering
+# pbmc$percent.mt = PercentageFeatureSet(pbmc,pattern = "^MT-")
+
+
+# ribo.genes <- grep(pattern = "(^RPL|^RPS|^MRP)", x = rownames(x = pbmc@assays$RNA@data), value = TRUE)
+
+VlnPlot(pbmc,features = c("nFeature_RNA", "nCount_RNA", "percent.mt","nFeature_ATAC","nCount_ATAC"), group.by = "Predicted_doublets",ncol = 3)
+
+plot1 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+```
+
+---
+
+## Filtering cells
+
+You can filter out genes that are expressed by a few number of cells, which could save some memory space and computation time, also remove some noises for PCA and clustering ...
+
+```{r,echo=TRUE,eval=FALSE}
+# This throws an error after wards so probably do this at the start or use 
+# the thresholds when creating the Seurat object min.cells= 10
+num.cells = rowSums(pbmc@assays$RNA@counts>0)
+length(num.cells)
+# at.least 10 cells express the gene
+length(num.cells[num.cells>10])
+pbmc@assays$RNA@data = pbmc@assays$RNA@data[names(num.cells[num.cells<10]),]
+pbmc@assays$RNA@counts = pbmc@assays$RNA@counts[names(num.cells[num.cells<10]),]
+
+num.cells = rowSums(pbmc@assays$ATAC@counts>0)
+length(num.cells)
+# at.least 3 cells have the peak, ATAC peak is 
+# less conserved in terms of position
+length(num.cells[num.cells>3])
+pbmc@assays$ATAC@data = pbmc@assays$ATAC@data[names(num.cells[num.cells<3]),]
+pbmc@assays$ATAC@counts = pbmc@assays$ATAC@counts[names(num.cells[num.cells<10]),]
+```
+
+Getting thresholds: You can do it either through visual inspection by setting manually cut-offs to exclude outliers. Look at your boxplots, distribution histograms, scatter plots etc. You can also find outliers using `quantile()` or the low/high Median Absolute Deviations (`mad()`) which estimates the deviations with regard to the median value.
+
+```{r}
+library(ggExtra)
+max.mito.thr <- median(pbmc$percent.mt) + 3*mad(pbmc$percent.mt)
+# For mitochondrial percentages the lower the value, the better it is,
+# so no lower bound threshold to calculate
+# min.mito.thr <- median(pbmc$percent.mt) - 3*mad(pbmc$percent.mt)
+thr_quantiles = quantile(pbmc$percent.mt,0.95)
+
+p1 <- ggplot(pbmc@meta.data, aes(x=nFeature_RNA, y=percent.mt)) +
+      geom_point() +
+      geom_hline(aes(yintercept = thr_quantiles[1]), colour = "red", linetype = 2) +
+      # geom_hline(aes(yintercept = thr_quantiles[1]), colour = "red", linetype = 2) +
+      annotate(geom = "text", 
+               label = paste0(as.numeric(
+                 table(pbmc$percent.mt > thr_quantiles[1])[2]),
+                              " cells removed\n",
+                 as.numeric(
+                   table(pbmc$percent.mt > thr_quantiles[1])[1]),
+                              " cells remain"), x = 6000, y = 0.1)
+
+ggMarginal(p1, type = "histogram", fill="lightgrey", bins=100) 
+```
+
+Same thing with a `Seurat` function
+```{r,echo=TRUE,eval=TRUE}
+DensityScatter(pbmc,x = "nFeature_RNA",y="percent.mt",quantiles = TRUE,log_x = TRUE)
+# library(ggExtra)
+# library(cowplot)
+# # Relation between nUMI and nGene detected
+# p1 <- ggplot(pbmc@meta.data, aes(x=nCount_RNA, y=nFeature_RNA)) + geom_point() + geom_smooth(method="lm")
+# p1 <- ggMarginal(p1, type = "histogram", fill="lightgrey")
+# 
+# p2 <- ggplot(pbmc@meta.data, aes(x=log10(nCount_RNA), y=log10(nFeature_RNA))) + geom_point() + geom_smooth(method="lm")
+# p2 <- ggMarginal(p2, type = "histogram", fill="lightgrey")
+# 
+# plot_grid(plotlist = list(p1,p2), ncol=2, align='h', rel_widths = c(1, 1))
+```
+
+---
+
+### On the number of genes detected/ RNA molecules captured
+
+```{r}
+# Set low and high thresholds on the number of detected genes
+min.Genes.thr <- median(log10(pbmc$nFeature_RNA)) - 3*mad(log10(pbmc$nFeature_RNA))
+max.Genes.thr <- median(log10(pbmc$nFeature_RNA)) + 3*mad(log10(pbmc$nFeature_RNA))
+
+# Set high threshold on the number of transcripts
+max.nUMI.thr <- median(log10(pbmc$nCount_RNA)) + 3*mad(log10(pbmc$nCount_RNA))
+# Gene/UMI scatter plot before filtering
+
+
+# Set low and high thresholds on the number of detected genes
+min.Peaks.thr <- median(log10(pbmc$nFeature_ATAC)) - 3*mad(log10(pbmc$nFeature_ATAC))
+max.Peaks.thr <- median(log10(pbmc$nFeature_ATAC)) + 3*mad(log10(pbmc$nFeature_ATAC))
+
+# Set high threshold on the number of transcripts
+max.ATAC_frag.thr <- median(log10(pbmc$nCount_ATAC)) + 3*mad(log10(pbmc$nCount_ATAC))
+# Gene/UMI scatter plot before filtering
+
+
+p1 <- ggplot(pbmc@meta.data, aes(x=log10(nCount_RNA), y=log10(nFeature_RNA),col=Predicted_doublets)) +
+      geom_point() +
+      geom_smooth(method="lm") +
+      geom_hline(aes(yintercept = min.Genes.thr), colour = "green", linetype = 2) +
+      geom_hline(aes(yintercept = max.Genes.thr), colour = "green", linetype = 2) +
+      geom_vline(aes(xintercept = max.nUMI.thr), colour = "red", linetype = 2)
+p2 <- ggplot(pbmc@meta.data, aes(x=log10(nCount_ATAC), y=log10(nFeature_ATAC),col=Predicted_doublets)) +
+      geom_point() +
+      geom_smooth(method="lm") +
+      geom_hline(aes(yintercept = min.Peaks.thr), colour = "green", linetype = 2) +
+      geom_hline(aes(yintercept = max.Peaks.thr), colour = "green", linetype = 2) +
+      geom_vline(aes(xintercept = max.ATAC_frag.thr), colour = "red", linetype = 2)
+
+patchwork::wrap_elements(ggMarginal(p1, type = "histogram", fill="lightgrey"))+
+  patchwork::wrap_elements(ggMarginal(p2, type = "histogram", fill="lightgrey"))
+```
+Let's stick with the quantile thresholds for today
+```{r}
+nUMI.thrs = quantile(pbmc$nCount_RNA,c(0.05,0.95))
+nGenes.thrs = quantile(pbmc$nFeature_RNA,c(0.05,0.95))
+nFrags.thrs = quantile(pbmc$nCount_ATAC,c(0.05,0.95))
+nPeaks.thrs = quantile(pbmc$nFeature_ATAC,c(0.05,0.95))
+mito_thr = quantile(pbmc$percent.mt,0.95)
+tss.thr = quantile(pbmc$TSS.enrichment,0.05)
+nucleo.thr = quantile(pbmc$nucleosome_signal,0.95)
+```
+
+```{r}
+pbmc = subset(
+  x= pbmc,
+  subset = nCount_RNA < nUMI.thrs[2] &
+    nCount_RNA > nUMI.thrs[1] &
+    nFeature_RNA < nGenes.thrs[2] &
+    nFeature_RNA > nGenes.thrs[1] & 
+    percent.mt < mito_thr[1])
+pbmc=subset(
+  x=pbmc,
+  subset = nCount_ATAC < nFrags.thrs[2] &
+    nCount_ATAC > nFrags.thrs[1] &
+    nFeature_ATAC < nPeaks.thrs[2] &
+    nFeature_ATAC > nPeaks.thrs[1] &
+    TSS.enrichment > tss.thr[1] &
+    nucleosome_signal < 2
+)
+pbmc = pbmc[,which(pbmc$Predicted_doublets=="Singlet")]
+```
+
+
+## `SCTransform` to normalize, scale and find variable features + remove cell cycle effects... + PCA
+
+The 3 steps process that was recommended/required is now run with one command in `Seurat`. You can also regress out some undesired variations. These can be due to cell cycle stage differences between cells, sequencing depth, percentage of mitochondrial transcripts etc.
+```{r}
+DefaultAssay(pbmc) = "RNA"
+pbmc = CellCycleScoring(pbmc,s.features = Seurat::cc.genes.updated.2019$s.genes,g2m.features = Seurat::cc.genes$g2m.genes)
+head(pbmc$Phase)
+```
+```{r}
+# DefaultAssay(pbmc) = "RNA"
+pbmc = SCTransform(pbmc,vars.to.regress = "Phase")
+names(pbmc)
+```
+There's a new assay called "SCT" that is added to your object. `SCTransform` does not add the scaled data at the `pbmc@assays@RNA@data` anymore. That's what the previous steps do (`NormalizeData()` `ScaleData()`)
+
+```{r}
+pbmc = RunPCA(pbmc)
+names(pbmc@reductions)
+```
+Inorder to decide which components to keep just do an elbow plot and choose ndims below which adding components adds "insignificant" variation from the data...
+```{r}
+ElbowPlot(pbmc,ndims = 50,reduction = "pca")
+```
+You can also perform `JackStraw()` to get the optimal number of PCs, but this takes way too much time...
+```{r}
+VizDimLoadings(pbmc,dims = 1:2)
+```
+```{r}
+DimPlot(pbmc, reduction = "pca") + NoLegend()
+```
+
+```{r}
+DimHeatmap(pbmc, dims = 1, cells = 500, balanced = TRUE,reduction = "pca",assays = "SCT")
+```
+
+Same process for the ATAC data except that you perform Latent Semantic Indexing (LSI) which is more adapted to the higher sparsity nature of ATAC-Seq data
+```{r}
+DefaultAssay(pbmc) = "ATAC"
+pbmc <- FindTopFeatures(pbmc, min.cutoff = 5)
+pbmc <- RunTFIDF(pbmc)
+# If SVD throws an error:
+# Error in irlba(A = t(x = object), nv = n, work = irlba.work, tol = tol) : 
+  # function 'as_cholmod_sparse' not provided by package 'Matrix'
+   # install.packages("remotes")
+   # remotes::install_version("Matrix", version = "1.6-1")
+   # packageVersion("Matrix")
+pbmc <- RunSVD(pbmc)
+names(pbmc)
+names(pbmc@reductions)
+```
+
+The first LSI dimension often correlates with sequencing coverage so may not be relevant to capture biological differences...
+```{r}
+DepthCor(pbmc,n = 20,reduction = "lsi")
+DepthCor(pbmc,reduction = "pca",n = 20)
+```
+
+
+```{r}
+VizDimLoadings(pbmc,reduction = "lsi",dims = 1:2)
+```
+
+## Non-linear dimensionality reduction
+```{r}
+set.seed(12345)
+DefaultAssay(pbmc)="SCT"
+pbmc = RunUMAP(pbmc,dims = 1:20,reduction = "pca",reduction.name = "UMAP_RNA",seed.use = 42)
+```
+
+```{r}
+DefaultAssay(pbmc)="ATAC"
+pbmc = RunUMAP(pbmc,dims = 2:20,reduction = "lsi",reduction.name = "UMAP_ATAC",seed.use = 42)
+```
+
+
+```{r}
+DimPlot(pbmc,reduction = "UMAP_RNA",dims = 1:2)+NoLegend()
+```
+
+```{r}
+DefaultAssay(pbmc)="SCT"
+pbmc = RunTSNE(pbmc,dims = 1:20,reduction = "pca",reduction.name = "TSNE_RNA")
+```
+
+```{r}
+DefaultAssay(pbmc)="ATAC"
+pbmc = RunTSNE(pbmc,dims = 2:20,reduction = "lsi",reduction.name = "TSNE_ATAC")
+names(pbmc@reductions)
+```
+
+
+```{r}
+DimPlot(pbmc,reduction = "TSNE_RNA",dims = 1:2)+NoLegend()
+```
+
+## Let's take advantage of the bimodal nature of our data
+`FindMultiModalNeighbors()` allows to apply the weighted nearest neighbor (WNN) method to compute a joint neighbor graph with both the DNA accessibility and gene expression information.
+```{r}
+pbmc = FindMultiModalNeighbors(pbmc,
+                        reduction.list = list("pca","lsi"),
+                        dims.list = list(1:20,2:20),
+                        #this will be the column name for this values in metadata
+                        modality.weight.name = "wnn.weight",
+                        weighted.nn.name = "weighted.nn"
+                        )
+```
+```{r}
+pbmc <- RunUMAP(
+  object = pbmc,
+  nn.name = "weighted.nn",
+  assay = "RNA",
+  verbose = TRUE
+)
+```
+
+```{r}
+DimPlot(pbmc, label = TRUE, repel = TRUE, reduction = "umap") + NoLegend()
+```
+
+```{r}
+DefaultAssay(pbmc) = "SCT"
+FeaturePlot(pbmc,
+            features = c('MS4A1', 'CD3D', 'LEF1', 'NKG7', 'TREM1', 'LYZ'),
+            reduction = "umap")
+# To get the ATAC peaks with the most loadings
+Loadings(pbmc@reductions$lsi) %>% as.data.frame() %>% arrange(desc(LSI_3)) %>% head()
+DefaultAssay(pbmc) = "ATAC"
+FeaturePlot(pbmc,
+            features = c('chr14-99255246-99275454', 'chr20-50269694-50277398', 'chr14-99223600-99254668'),
+            reduction = "umap")
+```
+WNN also finds by default `k = 20` neighbors  `pbmc@neighbors$weighted.nn@nn.idx`, but you can also construct a KNN graph based on the euclidean distance in PCA/LSI space. 
+```{r}
+Seurat::Neighbors(pbmc)
+# FindNeighbors(pbmc,reduction = "pca",dims = 1:20)
+# FindClusters requires a graph.name
+# pbmc@graphs gives the graph names
+pbmc = FindClusters(pbmc,resolution = 0.8,graph.name = "wsnn",)
+DimPlot(pbmc,reduction = "umap")
+```
+
+## Annotate cell clusters
+
+If you have markers from published data you can label your clusters based on a reference annotation. This is an example given at the [Signac users guide page](https://stuartlab.org/signac/articles/pbmc_multiomic).
+```{bash,eval=FALSE,echo=TRUE}
+wget -O /home/robel/mount/NAS_CUVIER/grpCuvier/rtesfaye/M2_TP_2023/singlecell/pbmc_multimodal.h5seurat https://atlas.fredhutch.org/data/nygc/multimodal/pbmc_multimodal.h5seurat
+```
+
+```{r}
+library(SeuratDisk)
+
+# load PBMC reference
+reference <- LoadH5Seurat("/home/robel/mount/NAS_CUVIER/grpCuvier/rtesfaye/M2_TP_2023/singlecell/pbmc_multimodal.h5seurat", assays = list("SCT" = "counts"), reductions = 'spca')
+DefaultAssay(pbmc) <- "SCT"
+# transfer cell type labels from reference to query
+transfer_anchors <- FindTransferAnchors(
+  reference = reference,
+  query = pbmc,
+  normalization.method = "SCT",
+  reference.reduction = "spca",
+  recompute.residuals = FALSE,
+  dims = 1:50
+)
+predictions <- TransferData(
+  anchorset = transfer_anchors, 
+  refdata = reference$celltype.l2,
+  weight.reduction = pbmc[['pca']],
+  dims = 1:50
+)
+
+pbmc <- AddMetaData(
+  object = pbmc,
+  metadata = predictions
+)
+
+# set the cell identities to the cell type predictions
+Idents(pbmc) <- "predicted.id"
+
+# set a reasonable order for cell types to be displayed when plotting
+levels(pbmc) <- c("CD4 Naive", "CD4 TCM", "CD4 CTL", "CD4 TEM", "CD4 Proliferating",
+                  "CD8 Naive", "dnT",
+                 "CD8 TEM", "CD8 TCM", "CD8 Proliferating", "MAIT", "NK", "NK_CD56bright",
+                 "NK Proliferating", "gdT",
+                 "Treg", "B naive", "B intermediate", "B memory", "Plasmablast",
+                 "CD14 Mono", "CD16 Mono",
+                 "cDC1", "cDC2", "pDC", "HSPC", "Eryth", "ASDC", "ILC", "Platelet")
+```
+```{r}
+DimPlot(pbmc,label = TRUE)
+```
+
+But the same functions can be used to transfer annotation labels between scRNA-Seq and scATAC-Seq data if you don't have multiomic data. To do that you create a gene activity matrix using your scATAC-Seq data. Here we presume that the more a gene is accessible, the more it is expressed, so you quantify ATAC signals within the gene body and 2k upstream TSS sites of all genes. You create an "RNA" assay with this quantifications. You can the same process to integrate 2 different scRNA-Seq data with the same populations (to remove batch effects). There is a more detailed explanation on CCA (Canonical Correlation Analaysis), the method implemented by Seurat, on this [website](https://hbctraining.github.io/scRNA-seq_online/lessons/06_integration.html).
+```{r, eval=FALSE,echo=TRUE}
+gene_activities = GeneActivity(pbmc@assays$ATAC)
+pbmc[['RNA_atac']] <- CreateAssayObject(counts = gene.activities)
+pbmc = SCTransform(pbmc,assay = "RNA_atac")
+FindTransferAnchors(reference = pbmc@assays$RNA,reduction = "cca")
+TransferData()#...
+```
+
+But you can also find markers of your clusters to annotate them manually by identifying genes/regulatory elements that define them. You can do pair-wise comparisons between your clusters or `FindAllMarkers()` to identify markers of each cluster (which takes quite some time). You can do this for both your gene expression matrix and ATAC peaks.
+```{r}
+DefaultAssay(pbmc) = "SCT"
+DE_genes = FindMarkers(pbmc,ident.1 = "CD14 Mono",ident.2 = "B naive")
+# FindAllMarkers() for all clusters
+# 
+```
+
+If you want other tools to integrate different data and probably correct batch effects there is also [harmony](https://github.com/immunogenomics/harmony) and many more. [ArchR](https://www.archrproject.com/) to integrate scATAC and scRNA. They all have their limits and advantages, and they might not suit your questions and data.
+
+## Peaks to genes
+In the [Signac paper](https://www.biorxiv.org/content/10.1101/2020.11.09.373613v1), there is a method presented to link genes to ATAC peaks. Briefly, the idea is to associate ATAC peaks and genes that are co-regulated across cells. A pearson correlation test is performed between the expression of a gene of interest and signal of ATAC peak found within a 500 Kb windows of the gene. To estimate the randomness of this correlation, a pearson correlation is performed between the gene of interest and other randomly selected ATAC peaks with the same characteristics as the tested ATAC peak but located on another chromosome. A z-score is computed using this background signal and the observed signal and then a one-sided z-test computes p. values of the association.
+
+`RegionStats()` gives GC content in the ATAC peaks, as characterstics to consider for selecting background peaks.
+
+```{r}
+DefaultAssay(pbmc) <- "ATAC"
+
+# first compute the GC content for each peak
+pbmc <- RegionStats(pbmc, genome = BSgenome.Hsapiens.UCSC.hg38::BSgenome.Hsapiens.UCSC.hg38)
+
+# link peaks to genes
+pbmc <- LinkPeaks(
+  object = pbmc,
+  peak.assay = "ATAC",
+  expression.assay = "SCT",
+  genes.use = c("LYZ", "MS4A1")
+)
+```
+```{r}
+idents.plot <- c("B naive", "B intermediate", "B memory",
+                 "CD14 Mono", "CD16 Mono", "CD8 TEM", "CD8 Naive")
+
+p1 <- CoveragePlot(
+  object = pbmc,
+  region = "MS4A1",
+  features = "MS4A1",
+  expression.assay = "SCT",
+  idents = idents.plot,
+  extend.upstream = 500,
+  extend.downstream = 10000
+)
+
+p2 <- CoveragePlot(
+  object = pbmc,
+  region = "LYZ",
+  features = "LYZ",
+  expression.assay = "SCT",
+  idents = idents.plot,
+  extend.upstream = 8000,
+  extend.downstream = 5000
+)
+patchwork::wrap_plots(p1, p2, ncol = 1)
+```
+
+## Sources used to prepare this demo
+[Signac user's guide on multiomic data](https://stuartlab.org/signac/articles/pbmc_multiomic)
+
+[Signac user's guide on scATAC-seq data](https://stuartlab.org/signac/articles/pbmc_vignette)
+
+[Seurat user's guide on scATAC-seq data](https://satijalab.org/seurat/articles/pbmc3k_tutorial)
+
+[some course I found from Institut Gustave Roussy](https://ifb-elixirfr.github.io/EBAII/2021/ebaiin1/single_cell/Intro_Single-Cell_20211122.pdf)
+
+OSCA
+
+[Quality control with basic R packages and Seurat](https://matthieuxmoreau.github.io/EarlyPallialNeurogenesis/html-Reports/Quality_Control.html)
+
+[hbctraining](https://hbctraining.github.io/scRNA-seq_online/schedule/)
+
+For trajectory analysis:
+
+[Look for monocle](https://cole-trapnell-lab.github.io/monocle3/docs/introduction/)
+
+[Also to use monocle3 on Seurat objects](https://stuartlab.org/signac/articles/monocle)
+
+[velocyto: the documentation is minimal](http://velocyto.org/)
